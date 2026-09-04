@@ -36,6 +36,9 @@ let doneFlag = false;
 let retraining = false;
 const deadMasks = [null, new Set(), new Set(), new Set()]; // 手动禁用的隐藏神经元（层→下标集合）
 let rfTarget = null; // 感受野卡片当前指向的神经元 [l, j]
+let hlEdges = [];       // 选中神经元的路径高亮：每层 Set("i-j")
+let hlNodes = new Set(); // 路径经过的节点 "l:j"（l≥1）
+let hlPixels = new Set(); // 路径经过的输入像素下标（0..783）
 let view = { k: 1, tx: 0, ty: 0 }; // 画布视图：缩放系数 + 平移（逻辑像素）
 let panState = null;    // 拖拽平移进行中的状态
 let suppressClick = false; // 拖拽结束后吞掉紧随的 click
@@ -298,6 +301,61 @@ function buildEdges() {
   }
   weightsDirty = false;
   lastEdgeBuild = performance.now();
+  if (rfTarget) computeHighlight(); // 权重更新后按新连线重算路径高亮
+}
+
+/* 路径追踪：从选中神经元沿强连接边子集做上游 + 下游双向 BFS，
+   收集所有「经过它」的连线、节点与输入像素 */
+function computeHighlight() {
+  hlEdges = []; hlNodes = new Set(); hlPixels = new Set();
+  if (!rfTarget || !edges.length || edges.length !== W.length) return;
+  const [sl, sj] = rfTarget;
+  for (let l = 0; l < W.length; l++) hlEdges.push(new Set());
+
+  hlNodes.add(sl + ":" + sj);
+  /* 上游：逐层向输入方向回溯（edges[l] 连接层 l → 层 l+1，按目标匹配） */
+  let frontier = new Set([sj]);
+  for (let l = sl - 1; l >= 0; l--) {
+    const next = new Set();
+    for (const [i, j] of edges[l]) {
+      if (frontier.has(j)) {
+        hlEdges[l].add(i + "-" + j);
+        if (l > 0) { hlNodes.add(l + ":" + i); next.add(i); }
+        else hlPixels.add(i);
+      }
+    }
+    frontier = next;
+  }
+  /* 下游：逐层向输出方向追踪（按源匹配，输出层不再外扩） */
+  frontier = new Set([sj]);
+  for (let l = sl; l < edges.length; l++) {
+    const fout = arch[l + 1], w = W[l];
+    const next = new Set();
+    const covered = new Set();
+    for (const [i, j] of edges[l]) {
+      if (frontier.has(i)) {
+        hlEdges[l].add(i + "-" + j);
+        covered.add(i);
+        if (l + 1 <= 3) { hlNodes.add((l + 1) + ":" + j); next.add(j); }
+      }
+    }
+    /* 兜底：神经元在稀疏子集里没有出边时，按 |w| 补前 3 条，保证路径走通 */
+    for (const i of frontier) {
+      if (covered.has(i)) continue;
+      const cand = [];
+      for (let j = 0; j < fout; j++) {
+        const v = Math.abs(w[i * fout + j]);
+        if (v > 0) cand.push([v, j]);
+      }
+      cand.sort((a, b) => b[0] - a[0]);
+      for (let t = 0; t < Math.min(3, cand.length); t++) {
+        const j = cand[t][1];
+        hlEdges[l].add(i + "-" + j);
+        if (l + 1 <= 3) { hlNodes.add((l + 1) + ":" + j); next.add(j); }
+      }
+    }
+    frontier = next;
+  }
 }
 
 function drawNet(now) {
@@ -321,23 +379,30 @@ function drawNet(now) {
 
   const c = colX();
   const wavePos = animT0 ? (now - animT0) / WAVE_LAYER_MS : Infinity;
+  const hlActive = !!rfTarget && hlEdges.length === edges.length;
 
   /* --- 连线 --- */
   for (let l = 0; l < edges.length; l++) {
     const fin = arch[l], fout = arch[l + 1], w = W[l];
     const passing = wavePos >= l && wavePos < l + 1.15; // 波前正穿过这层
     const boost = passing ? Math.max(0, 1 - Math.abs(wavePos - (l + 0.5)) / 0.9) : 0;
+    const hlSet = hlActive ? hlEdges[l] : null;
     for (const [i, j] of edges[l]) {
       const wv = w[i * fout + j];
       const mag = Math.abs(wv) / edgeScale[l];
+      const isHl = hlSet && hlSet.has(i + "-" + j);
       let alpha = 0.04 + mag * mag * 0.5 + boost * mag * 0.45;
-      if (deadMasks[l] && deadMasks[l].has(i)) alpha *= 0.08;      // 源被禁用
-      if (deadMasks[l + 1] && deadMasks[l + 1].has(j)) alpha *= 0.08; // 目标被禁用
+      if (isHl) alpha = Math.max(alpha, 0.3 + mag * 0.65); // 路径线抬亮
+      else if (hlActive) alpha *= 0.3;                     // 非路径线淡化
+      if (!isHl) {
+        if (deadMasks[l] && deadMasks[l].has(i)) alpha *= 0.08;      // 源被禁用
+        if (deadMasks[l + 1] && deadMasks[l + 1].has(j)) alpha *= 0.08; // 目标被禁用
+      }
       if (alpha < 0.02) continue;
       if (alpha > 1) alpha = 1;
       const p1 = nodePos(l, i), p2 = nodePos(l + 1, j);
       ctx.strokeStyle = rgba(wv >= 0 ? CYAN : CORAL, alpha);
-      ctx.lineWidth = 0.6 + mag * 1.1 + boost * 0.8;
+      ctx.lineWidth = isHl ? 1.1 + mag * 1.7 + boost * 0.5 : 0.6 + mag * 1.1 + boost * 0.8;
       ctx.beginPath();
       ctx.moveTo(p1.x, p1.y);
       ctx.lineTo(p2.x, p2.y);
@@ -353,7 +418,9 @@ function drawNet(now) {
     for (let i = 0; i < 784; i++) {
       const v = inputVec ? inputVec[i] : 0;
       if (v > 0.04) {
-        ctx.fillStyle = rgba([225, 250, 246], Math.min(1, v));
+        let a = Math.min(1, v);
+        if (hlActive && !hlPixels.has(i)) a *= 0.3; // 非路径像素淡化，路径像素保持点亮
+        ctx.fillStyle = rgba([225, 250, 246], a);
         ctx.fillRect(c.gx + (i % 28) * cell, c.gy + Math.floor(i / 28) * cell, cell + 0.4, cell + 0.4);
       }
     }
@@ -374,6 +441,8 @@ function drawNet(now) {
       const a = acts ? acts[l][j] : 0;
       const glow = a * light;
       const y = hiddenY(l, j);
+      const isSel = rfTarget && rfTarget[0] === l && rfTarget[1] === j;
+      const isHlNode = hlActive && hlNodes.has(l + ":" + j);
       ctx.beginPath();
       ctx.arc(x, y, r, 0, 6.2832);
       if (dead && dead.has(j)) {
@@ -391,13 +460,35 @@ function drawNet(now) {
         ctx.strokeStyle = "rgba(255,109,109,0.55)";
         ctx.lineWidth = 1;
         ctx.stroke();
+        if (isSel) { // 选中已禁用的神经元：补琥珀环便于辨认
+          ctx.beginPath();
+          ctx.arc(x, y, r + 3, 0, 6.2832);
+          ctx.strokeStyle = rgba(AMBER, 0.85);
+          ctx.lineWidth = 1.6;
+          ctx.stroke();
+        }
         continue;
       }
       ctx.fillStyle = rgba(CYAN, 0.05 + glow * 0.85);
       ctx.fill();
-      ctx.strokeStyle = rgba(CYAN, 0.28 + glow * 0.6);
-      ctx.lineWidth = 0.8;
-      ctx.stroke();
+      if (isSel) {
+        ctx.strokeStyle = rgba(AMBER, 0.95);
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(x, y, r + 3, 0, 6.2832);
+        ctx.strokeStyle = rgba(AMBER, 0.4);
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      } else if (isHlNode) {
+        ctx.strokeStyle = "rgba(233,245,242,0.85)";
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = rgba(CYAN, 0.28 + glow * 0.6);
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+      }
     }
     ctx.font = `9px ${MONO}`;
     ctx.fillStyle = "rgba(91,110,140,0.85)";
@@ -421,8 +512,17 @@ function drawNet(now) {
       ctx.arc(c.outX, y, r, 0, 6.2832);
       ctx.fillStyle = rgba(CYAN, 0.05 + glow * 0.9);
       ctx.fill();
-      ctx.strokeStyle = rgba(CYAN, j === top && glow > 0.15 ? 0.95 : 0.3 + glow * 0.5);
-      ctx.lineWidth = j === top && glow > 0.15 ? 1.6 : 0.8;
+      const isHlOut = hlActive && hlNodes.has("4:" + j);
+      if (j === top && glow > 0.15) {
+        ctx.strokeStyle = rgba(CYAN, 0.95);
+        ctx.lineWidth = 1.6;
+      } else if (isHlOut) {
+        ctx.strokeStyle = "rgba(233,245,242,0.85)";
+        ctx.lineWidth = 1.2;
+      } else {
+        ctx.strokeStyle = rgba(CYAN, 0.3 + glow * 0.5);
+        ctx.lineWidth = 0.8;
+      }
       ctx.stroke();
       ctx.fillStyle = j === top && glow > 0.15 ? rgba(CYAN, 1) : "rgba(91,110,140,0.9)";
       ctx.textAlign = "left";
@@ -503,6 +603,7 @@ $("rf-toggle").addEventListener("click", () => {
   if (set.has(j)) set.delete(j); else set.add(j);
   if (inputVec) { acts = forward(inputVec); probs = acts[acts.length - 1]; updateBars(); }
   showRF(l, j); // 刷新卡片文案（按钮状态）
+  computeHighlight();
   updateEnableAllBtn();
 });
 
@@ -510,6 +611,7 @@ $("btn-enable-all").addEventListener("click", () => {
   for (const m of deadMasks) if (m) m.clear();
   if (inputVec) { acts = forward(inputVec); probs = acts[acts.length - 1]; updateBars(); }
   if (rfTarget) showRF(rfTarget[0], rfTarget[1]);
+  computeHighlight();
   updateEnableAllBtn();
 });
 
@@ -531,8 +633,8 @@ netCv.addEventListener("click", (e) => {
       if (d < r * r && d < bestD) { best = [l, j]; bestD = d; }
     }
   }
-  if (best) showRF(best[0], best[1]);
-  else { $("rf-card").classList.remove("show"); rfTarget = null; }
+  if (best) { showRF(best[0], best[1]); computeHighlight(); }
+  else { $("rf-card").classList.remove("show"); rfTarget = null; computeHighlight(); }
 });
 
 /* ---------------- 视图：滚轮缩放 + 拖拽平移 + 双击复位 ---------------- */
@@ -681,6 +783,7 @@ $("btn-retrain").addEventListener("click", () => {
   updateEnableAllBtn();
   $("rf-card").classList.remove("show");
   rfTarget = null;
+  computeHighlight();
   lossH = []; accH = [];
   step = 0; epoch = 0;
   $("ro-step").textContent = "0";
