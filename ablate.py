@@ -53,7 +53,7 @@ async def main() -> None:
         assert f"神经元 {target}" in name, f"点击应选中神经元 {target}，实际: {name}"
         await page.click("#rf-toggle")
         after_toggle_txt = await page.evaluate("document.getElementById('rf-toggle').textContent")
-        restore_visible = await page.evaluate("!document.getElementById('btn-restore').hidden")
+        restore_visible = await page.evaluate("!document.getElementById('btn-enable-all').disabled")
         disabled = await page.evaluate(
             f"({{p5: probs[4], act: acts[1][{target}], top: probs.indexOf(Math.max(...probs)), pTop: Math.max(...probs)}})"
         )
@@ -71,7 +71,7 @@ async def main() -> None:
             """() => {
               const idx = [...acts[1].keys()].sort((a, b) => acts[1][b] - acts[1][a]).slice(0, 30);
               idx.forEach(j => deadMasks[1].add(j));
-              acts = forward(inputVec); probs = acts[acts.length - 1]; updateBars(); updateRestoreBtn();
+              acts = forward(inputVec); probs = acts[acts.length - 1]; updateBars(); updateEnableAllBtn();
             }"""
         )
         batch = await page.evaluate(
@@ -81,9 +81,12 @@ async def main() -> None:
         assert batch["pTop"] < before["p5"] - 0.05 or batch["top"] != before["top"], "批量消融应明显改变输出"
 
         # 恢复
-        await page.click("#btn-restore")
+        await page.click("#btn-enable-all")
         restored = await page.evaluate("({p5: probs[4], pTop: Math.max(...probs), top: probs.indexOf(Math.max(...probs))})")
-        restore_hidden = await page.evaluate("document.getElementById('btn-restore').hidden")
+        restore_state = await page.evaluate(
+            "({d: document.getElementById('btn-enable-all').disabled, t: document.getElementById('btn-enable-all').textContent})"
+        )
+        restore_hidden = restore_state["d"] and restore_state["t"] == "启用所有神经元"
         print(f"[ablate] 恢复后: top={restored['top']+1} p(5)={restored['p5']:.4f} 置信度={restored['pTop']:.4f} · 恢复按钮隐藏: {restore_hidden}")
         assert abs(restored["p5"] - before["p5"]) < 1e-6, "恢复后概率应还原"
 

@@ -293,18 +293,19 @@ header {
 
 .title-right { display: flex; gap: 10px; align-items: center; }
 
-#btn-restore {
+#btn-enable-all {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.08em;
-  color: var(--coral);
+  color: var(--cyan);
   background: transparent;
-  border: 1px solid rgba(255, 109, 109, 0.4);
+  border: 1px solid rgba(56, 225, 212, 0.4);
   border-radius: 3px;
   padding: 2px 8px;
 }
 
-#btn-restore:hover { border-color: var(--coral); }
+#btn-enable-all:hover:not(:disabled) { border-color: var(--cyan); }
+#btn-enable-all:disabled { color: var(--faint); border-color: var(--line); cursor: default; }
 
 /* ---------- side column ---------- */
 #side-panel { grid-area: side; overflow-y: auto; }

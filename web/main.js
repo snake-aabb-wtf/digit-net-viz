@@ -478,10 +478,11 @@ function showRF(l, j) {
   $("rf-card").classList.add("show");
 }
 
-function updateRestoreBtn() {
+function updateEnableAllBtn() {
   const total = deadMasks.reduce((s, m) => s + (m ? m.size : 0), 0);
-  $("btn-restore").hidden = total === 0;
-  $("btn-restore").textContent = `恢复被禁用神经元（${total}）`;
+  const btn = $("btn-enable-all");
+  btn.disabled = total === 0;
+  btn.textContent = total === 0 ? "启用所有神经元" : `启用所有神经元（${total} 已禁用）`;
 }
 
 $("rf-toggle").addEventListener("click", () => {
@@ -491,14 +492,14 @@ $("rf-toggle").addEventListener("click", () => {
   if (set.has(j)) set.delete(j); else set.add(j);
   if (inputVec) { acts = forward(inputVec); probs = acts[acts.length - 1]; updateBars(); }
   showRF(l, j); // 刷新卡片文案（按钮状态）
-  updateRestoreBtn();
+  updateEnableAllBtn();
 });
 
-$("btn-restore").addEventListener("click", () => {
+$("btn-enable-all").addEventListener("click", () => {
   for (const m of deadMasks) if (m) m.clear();
   if (inputVec) { acts = forward(inputVec); probs = acts[acts.length - 1]; updateBars(); }
   if (rfTarget) showRF(rfTarget[0], rfTarget[1]);
-  updateRestoreBtn();
+  updateEnableAllBtn();
 });
 
 netCv.addEventListener("click", (e) => {
@@ -589,7 +590,7 @@ $("btn-retrain").addEventListener("click", () => {
   retraining = true;
   ws.send("retrain");
   for (const m of deadMasks) if (m) m.clear(); // 新网络从干净状态开始
-  updateRestoreBtn();
+  updateEnableAllBtn();
   $("rf-card").classList.remove("show");
   rfTarget = null;
   lossH = []; accH = [];
