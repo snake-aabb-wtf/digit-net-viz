@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# 运行时生成物：MNIST 下载缓存与验证截图
+data/
+shots/
+
+# 工具
+.vscode/
+.idea/
+.DS_Store

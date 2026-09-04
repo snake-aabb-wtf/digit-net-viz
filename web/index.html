@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手写数字 · 神经网络观测台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <div id="lamp">
+      <span id="lamp-dot"></span>
+      <span id="lamp-text">连接中 …</span>
+    </div>
+    <div id="title">DIGIT <b>·</b> OBSERVATORY</div>
+    <div id="readouts">
+      <div class="ro"><span class="ro-label">STEP</span><span class="ro-val" id="ro-step">—</span></div>
+      <div class="ro"><span class="ro-label">EPOCH</span><span class="ro-val" id="ro-epoch">—</span></div>
+      <div class="ro"><span class="ro-label">LOSS</span><span class="ro-val" id="ro-loss">—</span></div>
+      <div class="ro"><span class="ro-label">TEST ACC</span><span class="ro-val acc" id="ro-acc">—</span></div>
+    </div>
+  </header>
+
+  <section class="panel" id="paint-panel">
+    <div class="panel-title">输入 <small>INPUT · 28×28</small></div>
+    <div id="paint-wrap">
+      <div id="paint-frame">
+        <canvas id="paint" width="280" height="280"></canvas>
+        <div id="paint-hint">在此写一个 1–9</div>
+      </div>
+      <div id="paint-btns">
+        <button id="btn-clear" type="button">清空</button>
+        <button id="btn-retrain" type="button">重新训练</button>
+      </div>
+      <div id="paint-note">
+        落笔即推理，松手回放<b>信号传播动画</b>；<br>
+        点击中部网络的<b>隐藏神经元</b>可查看它学到的感受野。
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="net-panel">
+    <div class="panel-title">网络 <small id="net-sub">784 → 128 → 64 → 32 → 9</small></div>
+    <canvas id="net"></canvas>
+    <div id="rf-card">
+      <div id="rf-title">感受野 · <b id="rf-name">—</b></div>
+      <canvas id="rf-canvas" width="28" height="28"></canvas>
+      <div id="rf-hint">青=兴奋输入 红=抑制输入 · 点空白处关闭</div>
+    </div>
+  </section>
+
+  <section class="panel" id="side-panel">
+    <div class="panel-title">输出 <small>SOFTMAX · CLASS 1–9</small></div>
+    <div id="side-body">
+      <div id="bars"></div>
+      <div id="verdict">等待输入 …</div>
+
+      <div class="sec-label">训练过程</div>
+      <canvas id="chart" width="296" height="158"></canvas>
+      <div id="chart-legend">
+        <span><i style="background:var(--cyan)"></i>loss（训练）</span>
+        <span><i style="background:var(--amber)"></i>准确率（测试）</span>
+      </div>
+
+      <div id="data-info">
+        <b>数据集</b> —<br>
+        <b>训练样本</b> —<br>
+        <b>测试样本</b> —<br>
+        <b>训练轮次</b> —
+      </div>
+    </div>
+  </section>
+
+</div>
+<script src="main.js"></script>
+</body>
+</html>
