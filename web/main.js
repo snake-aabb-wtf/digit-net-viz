@@ -36,6 +36,9 @@ let doneFlag = false;
 let retraining = false;
 const deadMasks = [null, new Set(), new Set(), new Set()]; // 手动禁用的隐藏神经元（层→下标集合）
 let rfTarget = null; // 感受野卡片当前指向的神经元 [l, j]
+let view = { k: 1, tx: 0, ty: 0 }; // 画布视图：缩放系数 + 平移（逻辑像素）
+let panState = null;    // 拖拽平移进行中的状态
+let suppressClick = false; // 拖拽结束后吞掉紧随的 click
 
 /* ---------------- 工具 ---------------- */
 function f32fromB64(b64) {
@@ -223,6 +226,7 @@ function layoutNet() {
   const dpr = devicePixelRatio || 1;
   netCv.width = netW * dpr;
   netCv.height = netH * dpr;
+  if (typeof clampView === "function") clampView();
 }
 
 function netCtx() {
@@ -309,6 +313,11 @@ function drawNet(now) {
     return;
   }
   if (weightsDirty && now - lastEdgeBuild > 500) buildEdges();
+
+  /* 视图变换：世界坐标（布局坐标）→ 屏幕 */
+  ctx.save();
+  ctx.translate(view.tx, view.ty);
+  ctx.scale(view.k, view.k);
 
   const c = colX();
   const wavePos = animT0 ? (now - animT0) / WAVE_LAYER_MS : Infinity;
@@ -428,6 +437,8 @@ function drawNet(now) {
     ctx.textAlign = "center";
     ctx.fillText("画一个数字，信号将从这里出发", c.gx + c.gridSide / 2, c.gy - 12);
   }
+
+  ctx.restore();
 }
 
 /* ---------------- 感受野（点击隐藏节点） ---------------- */
@@ -503,9 +514,11 @@ $("btn-enable-all").addEventListener("click", () => {
 });
 
 netCv.addEventListener("click", (e) => {
+  if (suppressClick) { suppressClick = false; return; } // 拖拽平移不算点击
   const rect = netCv.getBoundingClientRect();
-  const sx = (e.clientX - rect.left) * (netW / rect.width);
-  const sy = (e.clientY - rect.top) * (netH / rect.height);
+  /* 屏幕坐标 → 世界坐标（除以视图变换） */
+  const sx = ((e.clientX - rect.left) * (netW / rect.width) - view.tx) / view.k;
+  const sy = ((e.clientY - rect.top) * (netH / rect.height) - view.ty) / view.k;
   /* 在全部隐层里找距离最近的节点（密集层先到先得会抓错邻居） */
   let best = null, bestD = Infinity;
   for (let l = 1; l <= 3; l++) {
@@ -520,6 +533,81 @@ netCv.addEventListener("click", (e) => {
   }
   if (best) showRF(best[0], best[1]);
   else { $("rf-card").classList.remove("show"); rfTarget = null; }
+});
+
+/* ---------------- 视图：滚轮缩放 + 拖拽平移 + 双击复位 ---------------- */
+const VIEW_MIN = 0.5, VIEW_MAX = 8;
+
+function clampView() {
+  view.k = Math.min(VIEW_MAX, Math.max(VIEW_MIN, view.k));
+  /* 平移上限：内容边到画布边之间，避免把网络甩出视野 */
+  const contentW = netW, contentH = netH;
+  const maxX = (contentW * (view.k - 1)) / 2 + contentW * 0.6;
+  const maxY = (contentH * (view.k - 1)) / 2 + contentH * 0.6;
+  view.tx = Math.min(maxX, Math.max(-maxX, view.tx));
+  view.ty = Math.min(maxY, Math.max(-maxY, view.ty));
+}
+
+function screenToWorld(px, py) {
+  return { x: (px - view.tx) / view.k, y: (py - view.ty) / view.k };
+}
+
+function zoomAt(px, py, factor) {
+  const before = screenToWorld(px, py);
+  view.k = Math.min(VIEW_MAX, Math.max(VIEW_MIN, view.k * factor));
+  /* 让缩放前光标下的世界坐标保持在光标下（锚点缩放） */
+  view.tx = px - before.x * view.k;
+  view.ty = py - before.y * view.k;
+  clampView();
+}
+
+netCv.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  if (!netW) return;
+  const rect = netCv.getBoundingClientRect();
+  const px = (e.clientX - rect.left) * (netW / rect.width);
+  const py = (e.clientY - rect.top) * (netH / rect.height);
+  /* deltaMode=1（行滚动）时按 16px/行折算 */
+  const unit = e.deltaMode === 1 ? 16 : 1;
+  const factor = Math.exp(-e.deltaY * unit * 0.0022);
+  zoomAt(px, py, factor);
+  netCv.style.cursor = view.k > 1 ? "grab" : "";
+}, { passive: false });
+
+netCv.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 || view.k <= 1) return; // 仅放大后允许拖拽平移
+  panState = {
+    id: e.pointerId,
+    sx: e.clientX, sy: e.clientY,
+    tx0: view.tx, ty0: view.ty,
+    moved: false,
+  };
+  netCv.setPointerCapture(e.pointerId);
+  netCv.style.cursor = "grabbing";
+});
+
+netCv.addEventListener("pointermove", (e) => {
+  if (!panState || e.pointerId !== panState.id) return;
+  const dx = e.clientX - panState.sx, dy = e.clientY - panState.sy;
+  if (!panState.moved && Math.hypot(dx, dy) > 3) panState.moved = true;
+  if (panState.moved) {
+    view.tx = panState.tx0 + dx;
+    view.ty = panState.ty0 + dy;
+    clampView();
+  }
+});
+
+function endPan(e) {
+  if (!panState || e.pointerId !== panState.id) return;
+  if (panState.moved) suppressClick = true; // 平移结束，吞掉随后的 click
+  panState = null;
+  netCv.style.cursor = view.k > 1 ? "grab" : "";
+}
+netCv.addEventListener("pointerup", endPan);
+netCv.addEventListener("pointercancel", endPan);
+
+netCv.addEventListener("dblclick", () => {
+  view = { k: 1, tx: 0, ty: 0 };
 });
 
 /* ---------------- 画板 ---------------- */
