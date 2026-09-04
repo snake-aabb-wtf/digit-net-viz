@@ -34,6 +34,8 @@ let edgeScale = [];    // 每层 alpha 归一化系数
 let sourceName = "";
 let doneFlag = false;
 let retraining = false;
+const deadMasks = [null, new Set(), new Set(), new Set()]; // 手动禁用的隐藏神经元（层→下标集合）
+let rfTarget = null; // 感受野卡片当前指向的神经元 [l, j]
 
 /* ---------------- 工具 ---------------- */
 function f32fromB64(b64) {
@@ -61,7 +63,9 @@ function forward(x) {
       for (let j = 0; j < fout; j++) { y[j] = Math.exp(y[j] - mx); se += y[j]; }
       for (let j = 0; j < fout; j++) y[j] /= se;
     } else {
+      const dead = deadMasks[l + 1] || null; // 第 l 层矩阵算出第 l+1 层激活，掩码按层号 l+1 取
       for (let j = 0; j < fout; j++) {
+        if (dead && dead.has(j)) continue; // 消融：该神经元输出强制为 0
         let s = b[j];
         for (let i = 0; i < fin; i++) s += a[i] * w[i * fout + j];
         y[j] = s > 0 ? s : 0;
@@ -318,6 +322,8 @@ function drawNet(now) {
       const wv = w[i * fout + j];
       const mag = Math.abs(wv) / edgeScale[l];
       let alpha = 0.04 + mag * mag * 0.5 + boost * mag * 0.45;
+      if (deadMasks[l] && deadMasks[l].has(i)) alpha *= 0.08;      // 源被禁用
+      if (deadMasks[l + 1] && deadMasks[l + 1].has(j)) alpha *= 0.08; // 目标被禁用
       if (alpha < 0.02) continue;
       if (alpha > 1) alpha = 1;
       const p1 = nodePos(l, i), p2 = nodePos(l + 1, j);
@@ -354,12 +360,30 @@ function drawNet(now) {
     const x = c.hiddenX[l - 1];
     const r = Math.min(8, (netH - 52) / n * 0.34);
     const light = animT0 ? clamp01((now - animT0 - l * WAVE_LAYER_MS) / WAVE_NODE_MS) : 1;
+    const dead = deadMasks[l];
     for (let j = 0; j < n; j++) {
       const a = acts ? acts[l][j] : 0;
       const glow = a * light;
       const y = hiddenY(l, j);
       ctx.beginPath();
       ctx.arc(x, y, r, 0, 6.2832);
+      if (dead && dead.has(j)) {
+        /* 被禁用：灰色暗斑 + 虚线环 */
+        ctx.fillStyle = "rgba(91,110,140,0.10)";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(91,110,140,0.55)";
+        ctx.lineWidth = 0.8;
+        ctx.setLineDash([2, 2]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(x - r * 0.45, y - r * 0.45);
+        ctx.lineTo(x + r * 0.45, y + r * 0.45);
+        ctx.strokeStyle = "rgba(255,109,109,0.55)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        continue;
+      }
       ctx.fillStyle = rgba(CYAN, 0.05 + glow * 0.85);
       ctx.fill();
       ctx.strokeStyle = rgba(CYAN, 0.28 + glow * 0.6);
@@ -445,26 +469,56 @@ function showRF(l, j) {
     img.data[i * 4 + 3] = a;
   }
   ctx.putImageData(img, 0, 0);
-  $("rf-name").textContent = `H${l} · 神经元 ${j}`;
+  rfTarget = [l, j];
+  $("rf-name").textContent = `H${l} · 神经元 ${j}` + (deadMasks[l] && deadMasks[l].has(j) ? "（已禁用）" : "");
+  const tbtn = $("rf-toggle");
+  const isDead = deadMasks[l].has(j);
+  tbtn.textContent = isDead ? "重新启用此神经元" : "禁用此神经元";
+  tbtn.classList.toggle("on", isDead);
   $("rf-card").classList.add("show");
 }
+
+function updateRestoreBtn() {
+  const total = deadMasks.reduce((s, m) => s + (m ? m.size : 0), 0);
+  $("btn-restore").hidden = total === 0;
+  $("btn-restore").textContent = `恢复被禁用神经元（${total}）`;
+}
+
+$("rf-toggle").addEventListener("click", () => {
+  if (!rfTarget) return;
+  const [l, j] = rfTarget;
+  const set = deadMasks[l];
+  if (set.has(j)) set.delete(j); else set.add(j);
+  if (inputVec) { acts = forward(inputVec); probs = acts[acts.length - 1]; updateBars(); }
+  showRF(l, j); // 刷新卡片文案（按钮状态）
+  updateRestoreBtn();
+});
+
+$("btn-restore").addEventListener("click", () => {
+  for (const m of deadMasks) if (m) m.clear();
+  if (inputVec) { acts = forward(inputVec); probs = acts[acts.length - 1]; updateBars(); }
+  if (rfTarget) showRF(rfTarget[0], rfTarget[1]);
+  updateRestoreBtn();
+});
 
 netCv.addEventListener("click", (e) => {
   const rect = netCv.getBoundingClientRect();
   const sx = (e.clientX - rect.left) * (netW / rect.width);
   const sy = (e.clientY - rect.top) * (netH / rect.height);
-  let hit = null;
-  for (let l = 1; l <= 3 && !hit; l++) {
+  /* 在全部隐层里找距离最近的节点（密集层先到先得会抓错邻居） */
+  let best = null, bestD = Infinity;
+  for (let l = 1; l <= 3; l++) {
     const n = arch[l];
     const r = Math.min(8, (netH - 52) / n * 0.34) + 7;
     const x = colX().hiddenX[l - 1];
     for (let j = 0; j < n; j++) {
       const y = hiddenY(l, j);
-      if ((x - sx) ** 2 + (y - sy) ** 2 < r * r) { hit = [l, j]; break; }
+      const d = (x - sx) ** 2 + (y - sy) ** 2;
+      if (d < r * r && d < bestD) { best = [l, j]; bestD = d; }
     }
   }
-  if (hit) showRF(hit[0], hit[1]);
-  else $("rf-card").classList.remove("show");
+  if (best) showRF(best[0], best[1]);
+  else { $("rf-card").classList.remove("show"); rfTarget = null; }
 });
 
 /* ---------------- 画板 ---------------- */
@@ -534,6 +588,10 @@ $("btn-retrain").addEventListener("click", () => {
   if (!ws || ws.readyState !== 1) return;
   retraining = true;
   ws.send("retrain");
+  for (const m of deadMasks) if (m) m.clear(); // 新网络从干净状态开始
+  updateRestoreBtn();
+  $("rf-card").classList.remove("show");
+  rfTarget = null;
   lossH = []; accH = [];
   step = 0; epoch = 0;
   $("ro-step").textContent = "0";

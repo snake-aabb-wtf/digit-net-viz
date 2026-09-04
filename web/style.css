@@ -270,6 +270,42 @@ header {
 
 #rf-hint { font-family: var(--font-mono); font-size: 9px; color: var(--faint); margin-top: 6px; }
 
+#rf-toggle {
+  margin-top: 8px;
+  width: 100%;
+  padding: 6px 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  border: 1px solid rgba(255, 109, 109, 0.5);
+  color: var(--coral);
+  background: rgba(255, 109, 109, 0.08);
+  border-radius: 3px;
+}
+
+#rf-toggle:hover { border-color: var(--coral); }
+
+#rf-toggle.on {
+  border-color: var(--line);
+  color: var(--dim);
+  background: transparent;
+}
+
+.title-right { display: flex; gap: 10px; align-items: center; }
+
+#btn-restore {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--coral);
+  background: transparent;
+  border: 1px solid rgba(255, 109, 109, 0.4);
+  border-radius: 3px;
+  padding: 2px 8px;
+}
+
+#btn-restore:hover { border-color: var(--coral); }
+
 /* ---------- side column ---------- */
 #side-panel { grid-area: side; overflow-y: auto; }
 

@@ -36,18 +36,24 @@
       </div>
       <div id="paint-note">
         落笔即推理，松手回放<b>信号传播动画</b>；<br>
-        点击中部网络的<b>隐藏神经元</b>可查看它学到的感受野。
+        点击<b>隐藏神经元</b>查看感受野，或<b>禁用</b>它做消融实验。
       </div>
     </div>
   </section>
 
   <section class="panel" id="net-panel">
-    <div class="panel-title">网络 <small id="net-sub">784 → 128 → 64 → 32 → 9</small></div>
+    <div class="panel-title">网络
+      <span class="title-right">
+        <small id="net-sub">784 → 128 → 64 → 32 → 9</small>
+        <button id="btn-restore" type="button" hidden>恢复被禁用神经元</button>
+      </span>
+    </div>
     <canvas id="net"></canvas>
     <div id="rf-card">
       <div id="rf-title">感受野 · <b id="rf-name">—</b></div>
       <canvas id="rf-canvas" width="28" height="28"></canvas>
       <div id="rf-hint">青=兴奋输入 红=抑制输入 · 点空白处关闭</div>
+      <button id="rf-toggle" type="button">禁用此神经元</button>
     </div>
   </section>
 
