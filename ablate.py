@@ -1,8 +1,7 @@
-"""消融功能验证：画 5 → 禁用 H1 神经元 → 前向变化 → 恢复 → 概率还原。"""
+"""消融功能验证：禁用/恢复神经元，数值断言在冻结权重快照内自洽比较（免疫训练 tick）。"""
 from __future__ import annotations
 
 import asyncio
-import json
 
 from playwright.async_api import async_playwright
 
@@ -37,60 +36,79 @@ async def main() -> None:
         await page.mouse.up()
         await page.wait_for_timeout(500)
 
-        before = await page.evaluate("({top: probs.indexOf(Math.max(...probs)), p5: probs[4], act: acts[1][5]})")
-        print(f"[ablate] 禁用前: top={before['top']+1} p(5)={before['p5']:.4f} h1[5]={before['act']:.4f}")
+        # ---- 数值核心：全部在冻结权重快照内完成，tick 不会干扰 ----
+        num = await page.evaluate(
+            """() => {
+              const input = inputVec;
+              const frozen = W.map(w => w.slice());   // 冻结权重
+              const run = (fn) => { const old = W; W = frozen; try { return fn(); } finally { W = old; } };
+              const snap = () => { acts = forward(input); probs = acts[acts.length - 1]; };
+              const out = {};
+              run(() => {
+                deadMasks.forEach(m => m && m.clear());
+                snap();
+                out.base = Math.max(...probs);
+                out.baseTop = probs.indexOf(Math.max(...probs)) + 1;
+                out.strongest = acts[1].indexOf(Math.max(...acts[1]));
+                out.baseP5 = probs[4];
 
-        # 选出对该输入激活最强的 H1 神经元，点开它的感受野并禁用
-        target = await page.evaluate("acts[1].indexOf(Math.max(...acts[1]))")
-        print(f"[ablate] 激活最强的 H1 神经元: #{target} (a={await page.evaluate(f'acts[1][{target}]'):.4f})")
+                deadMasks[1].add(out.strongest);           // 单神经元消融
+                snap();
+                out.offAct = acts[1][out.strongest];
+                out.offTop = probs.indexOf(Math.max(...probs)) + 1;
+                out.off = Math.max(...probs);
+
+                deadMasks[1].clear();                       // 恢复
+                snap();
+                out.re = Math.max(...probs);
+                out.reP5 = probs[4];
+
+                [...acts[1].keys()].sort((a, b) => acts[1][b] - acts[1][a]).slice(0, 30)
+                    .forEach(j => deadMasks[1].add(j));     // 批量消融
+                snap();
+                out.batch = Math.max(...probs);
+                out.batchTop = probs.indexOf(Math.max(...probs)) + 1;
+                deadMasks[1].clear();
+                snap();
+              });
+              return out;
+            }"""
+        )
+        print(f"[ablate] 基线: top={num['baseTop']} 置信度={num['base']:.4f} p(5)={num['baseP5']:.4f} 最强H1=#{num['strongest']}")
+        print(f"[ablate] 单消融: act={num['offAct']:.4f} top={num['offTop']} 置信度={num['off']:.4f}")
+        print(f"[ablate] 恢复: 置信度={num['re']:.4f} p(5)={num['reP5']:.4f}")
+        print(f"[ablate] 批量消融30: top={num['batchTop']} 置信度={num['batch']:.4f}")
+        assert abs(num["offAct"]) < 1e-6, "被禁用神经元的激活应为 0"
+        assert abs(num["re"] - num["base"]) < 1e-6, "恢复后输出应与基线完全一致"
+        assert num["batch"] < num["base"] - 0.05 or num["batchTop"] != num["baseTop"], "批量消融应明显改变输出"
+
+        # ---- UI 链路：点最强神经元 → 卡片与按钮状态（与权重版本无关） ----
+        target = num["strongest"]
         await page.evaluate(
             f"""() => {{ const p = nodePos(1, {target}); const c = document.getElementById('net');
             const r = c.getBoundingClientRect();
-            const sx = p.x * r.width / netW, sy = p.y * r.height / netH;
+            const sx = (p.x * view.k + view.tx) * r.width / netW;
+            const sy = (p.y * view.k + view.ty) * r.height / netH;
             c.dispatchEvent(new MouseEvent('click',{{clientX:r.left+sx, clientY:r.top+sy, bubbles:true}})); }}"""
         )
         name = await page.evaluate("document.getElementById('rf-name').textContent")
         assert f"神经元 {target}" in name, f"点击应选中神经元 {target}，实际: {name}"
         await page.click("#rf-toggle")
-        after_toggle_txt = await page.evaluate("document.getElementById('rf-toggle').textContent")
-        restore_visible = await page.evaluate("!document.getElementById('btn-enable-all').disabled")
-        disabled = await page.evaluate(
-            f"({{p5: probs[4], act: acts[1][{target}], top: probs.indexOf(Math.max(...probs)), pTop: Math.max(...probs)}})"
-        )
-        print(f"[ablate] 卡片: {name} · 按钮变为「{after_toggle_txt}」 · 恢复按钮可见: {restore_visible}")
-        print(f"[ablate] 禁用后: top={disabled['top']+1} 置信度={disabled['pTop']:.4f} h1[{target}]={disabled['act']:.4f}")
+        btn_txt = await page.evaluate("document.getElementById('rf-toggle').textContent")
+        assert btn_txt == "重新启用此神经元"
+        enabled = await page.evaluate("!document.getElementById('btn-enable-all').disabled")
+        assert enabled, "有禁用时「启用所有神经元」应可用"
+        print(f"[ablate] UI: 卡片 {name} · 按钮「{btn_txt}」 · 启用按钮可用: {enabled}")
 
-        assert abs(disabled["act"]) < 1e-6, "被禁用神经元的激活应为 0"
-        assert after_toggle_txt == "重新启用此神经元"
-        assert restore_visible
-        # 单神经元消融通常不改变结果 —— 这正是网络冗余性的体现，打印观察即可
-        print(f"[ablate] 单神经元消融后输出不变: {abs(disabled['pTop'] - before['p5']) < 1e-6}（冗余网络的正常现象）")
-
-        # 批量消融：掐掉 H1 激活前 30 强，网络应明显受损
-        await page.evaluate(
-            """() => {
-              const idx = [...acts[1].keys()].sort((a, b) => acts[1][b] - acts[1][a]).slice(0, 30);
-              idx.forEach(j => deadMasks[1].add(j));
-              acts = forward(inputVec); probs = acts[acts.length - 1]; updateBars(); updateEnableAllBtn();
-            }"""
-        )
-        batch = await page.evaluate(
-            "({top: probs.indexOf(Math.max(...probs)), pTop: Math.max(...probs), n: deadMasks[1].size})"
-        )
-        print(f"[ablate] 掐掉 H1 前 30 强后: top={batch['top']+1} 置信度={batch['pTop']:.4f} 已禁用 {batch['n']} 个")
-        assert batch["pTop"] < before["p5"] - 0.05 or batch["top"] != before["top"], "批量消融应明显改变输出"
-
-        # 恢复
         await page.click("#btn-enable-all")
-        restored = await page.evaluate("({p5: probs[4], pTop: Math.max(...probs), top: probs.indexOf(Math.max(...probs))})")
-        restore_state = await page.evaluate(
+        after = await page.evaluate(
             "({d: document.getElementById('btn-enable-all').disabled, t: document.getElementById('btn-enable-all').textContent})"
         )
-        restore_hidden = restore_state["d"] and restore_state["t"] == "启用所有神经元"
-        print(f"[ablate] 恢复后: top={restored['top']+1} p(5)={restored['p5']:.4f} 置信度={restored['pTop']:.4f} · 恢复按钮隐藏: {restore_hidden}")
-        assert abs(restored["p5"] - before["p5"]) < 1e-6, "恢复后概率应还原"
+        assert after["d"] and after["t"] == "启用所有神经元", "全部启用后按钮应置灰复原"
+        print("[ablate] 启用所有神经元后按钮已复位")
 
-        # 重训清空状态
+        # ---- 重训清空掩码 ----
+        await page.evaluate("deadMasks[2].add(3); deadMasks[2].add(4); updateEnableAllBtn();")
         await page.click("#btn-retrain")
         await page.wait_for_timeout(2000)
         assert await page.evaluate("deadMasks.every(m => !m || m.size === 0)"), "重训后掩码应清空"
