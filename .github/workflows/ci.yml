@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: data
+          key: mnist-cache-v1
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install playwright
+          playwright install --with-deps chromium
+      - name: Start server
+        run: |
+          nohup python -m server.app > server.log 2>&1 &
+          for i in $(seq 1 90); do
+            curl -sf http://127.0.0.1:8123/api/status >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:8123/api/status
+      - name: E2E regression
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          python verify.py
+          python ablate.py
+          python zoom.py
+          python highlight.py
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shots
+          path: shots/
+          if-no-files-found: ignore
+      - name: Dump server log
+        if: failure()
+        run: cat server.log
