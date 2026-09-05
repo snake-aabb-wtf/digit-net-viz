@@ -4,9 +4,10 @@ __pycache__/
 venv/
 .venv/
 
-# 运行时生成物：MNIST 下载缓存与验证截图
+# 运行时生成物：MNIST 下载缓存、验证截图、部署导出
 data/
 shots/
+dist/
 
 # 工具
 .vscode/

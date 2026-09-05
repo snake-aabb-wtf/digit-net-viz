@@ -88,13 +88,132 @@ let ws = null;
 
 function connect() {
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-  ws.onopen = () => setLamp("training", "已连接 · 等待训练快照");
-  ws.onclose = () => { setLamp("err", "连接断开 · 2s 后重连"); setTimeout(connect, 2000); };
+  ws.onopen = () => { mode = "live"; setLamp("training", "已连接 · 等待训练快照"); };
+  ws.onclose = () => {
+    if (mode === "live") { setLamp("err", "连接断开 · 2s 后重连"); setTimeout(connect, 2000); return; }
+    if (mode === "static") return; // 静态模式不再碰 WS
+    /* 从未连上（如 GitHub Pages 上没有 /ws）→ 尝试静态权重 */
+    tryStatic().then((ok) => {
+      if (ok) enterStatic();
+      else { setLamp("err", "无服务 · 2s 后重试"); setTimeout(connect, 2000); }
+    });
+  };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === "init") onInit(m);
     else if (m.type === "tick") onTick(m);
   };
+}
+
+/* ---------------- 静态部署模式（GitHub Pages） ---------------- */
+let mode = "boot"; // boot | live | static
+let staticInfo = null;
+let timelineCache = null;
+let replayTimer = null;
+
+async function tryStatic() {
+  try {
+    const r = await fetch("weights.json", { cache: "no-cache" });
+    if (!r.ok) return false;
+    staticInfo = await r.json();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function enterStatic() {
+  mode = "static";
+  arch = staticInfo.arch;
+  sourceName = staticInfo.source;
+  maxEpoch = staticInfo.epochs || 0;
+  step = staticInfo.steps || 0;
+  epoch = maxEpoch;
+  $("net-sub").textContent = arch.join(" → ");
+  $("data-info").innerHTML =
+    `<b>数据集</b> ${sourceName === "mnist" ? "MNIST 在线子集（数字 1–9）" : "字体合成数据（兜底）"}<br>` +
+    `<b>训练方式</b> GitHub Actions · 静态部署<br>` +
+    `<b>训练样本</b> ${(staticInfo.trainN || 0).toLocaleString()} · <b>测试</b> ${(staticInfo.testN || 0).toLocaleString()}<br>` +
+    `<b>最终准确率</b> ${(staticInfo.acc * 100).toFixed(1)}%` +
+    (staticInfo.repo ? `<br><a href="https://github.com/${staticInfo.repo}/actions/workflows/deploy.yml" target="_blank" rel="noreferrer">在 Actions 上重新训练 ↗</a>` : "");
+  buildBars(arch[arch.length - 1]);
+  W = staticInfo.W.map(f32fromB64);
+  B = staticInfo.b.map(f32fromB64);
+  buildEdges();
+  $("ro-step").textContent = step;
+  $("ro-epoch").textContent = `${epoch}/${maxEpoch}`;
+  $("ro-loss").textContent = staticInfo.loss.toFixed(3);
+  $("ro-acc").textContent = (staticInfo.acc * 100).toFixed(1) + "%";
+  lossH = [staticInfo.loss0, staticInfo.loss];
+  accH = [staticInfo.acc0, staticInfo.acc];
+  drawChart();
+  setLamp("done", "静态部署模式 · CI 训练权重已加载");
+  $("btn-retrain").textContent = "回放训练";
+}
+
+function q8fromB64(b64, s) {
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  const i8 = new Int8Array(u8.buffer);
+  const f = new Float32Array(i8.length);
+  for (let i = 0; i < f.length; i++) f[i] = i8[i] * s;
+  return f;
+}
+
+function applyReplayFrame(f) {
+  W = f.Wq.map((o) => q8fromB64(o.d, o.s));
+  B = f.b.map(f32fromB64);
+  step = f.step; epoch = f.epoch;
+  $("ro-step").textContent = step;
+  $("ro-epoch").textContent = `${epoch}/${maxEpoch}`;
+  $("ro-loss").textContent = f.loss == null ? "—" : f.loss.toFixed(3);
+  $("ro-acc").textContent = f.acc == null ? "—" : (f.acc * 100).toFixed(1) + "%";
+  if (f.loss != null) lossH.push(f.loss);
+  if (f.acc != null) accH.push(f.acc);
+  weightsDirty = true;
+  if (inputVec) { acts = forward(inputVec); probs = acts[acts.length - 1]; updateBars(); }
+  drawChart();
+}
+
+async function replayTraining() {
+  if (mode !== "static" || replayTimer) return;
+  const btn = $("btn-retrain");
+  try {
+    if (!timelineCache) {
+      btn.disabled = true;
+      btn.textContent = "加载时间线 …";
+      const r = await fetch("timeline.json", { cache: "no-cache" });
+      if (!r.ok) throw new Error("timeline 缺失");
+      timelineCache = await r.json();
+    }
+  } catch {
+    btn.disabled = false;
+    btn.textContent = "回放训练（时间线缺失）";
+    return;
+  }
+  /* 新网络从干净状态开始 */
+  for (const m of deadMasks) if (m) m.clear();
+  updateEnableAllBtn();
+  $("rf-card").classList.remove("show");
+  rfTarget = null;
+  computeHighlight();
+  const frames = timelineCache.frames;
+  lossH = []; accH = [];
+  btn.disabled = true;
+  setLamp("training", "回放训练 …");
+  await new Promise((resolve) => {
+    let i = 0;
+    replayTimer = setInterval(() => {
+      applyReplayFrame(frames[i]);
+      i++;
+      btn.textContent = `回放中 ${i}/${frames.length}`;
+      if (i >= frames.length) { clearInterval(replayTimer); replayTimer = null; resolve(); }
+    }, timelineCache.frameMs || 350);
+  });
+  btn.disabled = false;
+  btn.textContent = "回放训练";
+  setLamp("done", "回放完成 · 试试画个数字");
 }
 
 function onInit(m) {
@@ -776,6 +895,7 @@ function clearPaint() {
 $("btn-clear").addEventListener("click", clearPaint);
 
 $("btn-retrain").addEventListener("click", () => {
+  if (mode === "static") { replayTraining(); return; }
   if (!ws || ws.readyState !== 1) return;
   retraining = true;
   ws.send("retrain");

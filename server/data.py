@@ -155,6 +155,8 @@ def load_dataset():
             print(f"[data] MNIST 获取失败（{e}），使用字体合成数据兜底。", flush=True)
             xtr, ytr, xte, yte = _synthetic_dataset()
             return xtr, ytr, xte, yte, "synthetic"
+    else:
+        source = "mnist"  # 全部缓存命中（首次运行时已下载）
 
     x_tr, y_tr = parts["train_images"], parts["train_labels"]
     x_te, y_te = parts["test_images"], parts["test_labels"]
