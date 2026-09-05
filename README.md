@@ -41,6 +41,27 @@ python -m server.app
 首次运行会从 S3 镜像下载 MNIST（约 12 MB）并缓存到 `data/`（已 gitignore）；
 下载失败时自动退回「字体合成数据」训练，程序照样能跑。
 
+## 在线版（GitHub Pages + Actions）
+
+仓库推送 `main` 后，`deploy.yml` 会在 **GitHub Actions 的机器上**完成训练，
+导出 `weights.json`（最终权重）与 `timeline.json`（67 帧 int8 量化训练时间线），
+自检通过后发布到 GitHub Pages —— 在线版无需任何本地服务：
+
+> **https://snake-aabb-wtf.github.io/digit-net-viz/**
+
+前端自动降级：探测不到 WebSocket（`/ws`）时进入**静态模式**，
+加载 CI 训练好的权重；「重新训练」按钮变为「**回放训练**」，
+按时间线逐帧回放从随机到学会的全过程（约 24 秒）。
+也可在仓库 Actions 页手动触发 *Train & Deploy to Pages* 重新训练。
+
+`ci.yml` 则在每次 push/PR 时自动跑四套 Playwright 回归（verify/ablate/zoom/highlight）。
+
+手动在本地导出静态产物：
+
+```bash
+python -m server.train_export --out dist   # 生成 dist/weights.json + dist/timeline.json
+```
+
 ## 交互指南
 
 | 操作 | 效果 |

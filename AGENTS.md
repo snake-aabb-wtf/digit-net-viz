@@ -18,12 +18,24 @@
 ## 目录
 
 ```
-server/  data.py(数据+兜底) model.py(MLP) trainer.py(训练线程) app.py(FastAPI)
+server/  data.py(数据+兜底) model.py(MLP) trainer.py(在线训练线程)
+         train_export.py(无服务训练导出 weights.json + timeline.json)
+         app.py(FastAPI)
 web/     index.html style.css main.js（全部渲染与交互逻辑在 main.js）
-verify.py ablate.py zoom.py highlight.py probe.py   # Playwright 端到端测试
+.github/workflows/  ci.yml(push/PR 回归) deploy.yml(训练→导出→Pages 部署)
+verify.py ablate.py zoom.py highlight.py probe.py selftest.py  # Playwright 测试
 data/    MNIST .npy 缓存（gitignore，勿提交）
 shots/   测试截图（gitignore）
+dist/    train_export 产物（gitignore）
 ```
+
+## 双运行模式（改 main.js 前先弄清当前模式）
+
+- **live 模式**：WS 连上 `server.app`，每 0.7s 收 tick 快照（现状逻辑）。
+- **static 模式**：WS 连不上（GitHub Pages 上 `/ws` 必 404）→ `tryStatic()`
+  加载 `weights.json` 进入静态模式；「重新训练」按钮变为「回放训练」，
+  按 `timeline.json` 逐帧应用 int8 量化权重（`applyReplayFrame`）。
+  两个模式共用 forward/渲染/交互代码，新模式判断用全局 `mode` 变量。
 
 ## 改动后的标准验证流程
 
@@ -41,6 +53,7 @@ shots/   测试截图（gitignore）
 | zoom.py | 滚轮缩放锚点、拖拽平移、双击复位、缩放态命中 |
 | highlight.py | 选中神经元的全层路径高亮与取消 |
 | probe.py | 像素级渲染体检（各画布区域非空） |
+| selftest.py | 静态模式降级、回放训练、回放后识别（需先跑 train_export） |
 
 ## 架构要点（改 main.js 前必读）
 
@@ -67,8 +80,15 @@ shots/   测试截图（gitignore）
 4. MNIST 下载失败会自动兜底合成数据（`source: "synthetic"`），
    断言数据源要兼容两种取值。
 5. Windows git 的 `LF will be replaced by CRLF` warning 属正常，忽略。
-6. `data/`、`shots/` 已 gitignore；发现它们被暂存通常是 .gitignore
+6. `data/`、`shots/`、`dist/` 已 gitignore；发现它们被暂存通常是 .gitignore
    行内注释失效（`#` 只在行首才是注释）。
+7. **int8 量化 scale = max|a|/127**（`train_export.py: b64_i8`）。
+   踩过的坑：把 max|a| 本身当 scale 会让权重放大 127 倍，ReLU 层侥幸存活，
+   softmax 却 `Inf/Inf = NaN` —— 报「识别输出 NaN」先查量化缩放。
+8. 静态站上 `/ws` 404 是**预期的降级信号**（console 会出现 WebSocket error），
+   测试脚本要过滤掉它，别当失败。
+9. `load_dataset()` 缓存命中与下载两条路径都要给 `source` 赋值
+   （曾因缓存命中分支漏赋值 UnboundLocalError）。
 
 ## 提交规范
 
